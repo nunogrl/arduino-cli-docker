@@ -1,0 +1,100 @@
+# Runs *inside* the container.
+
+# Where to look for config (priority):
+# 1) project-local (mounted with repo)
+# 2) external local config (mounted via ./config)
+CONFIG_CANDIDATES := /workspace/compilerconfig.json /config/compilerconfig.json
+CONFIG_JSON := $(firstword $(wildcard $(CONFIG_CANDIDATES)))
+
+# Selected profile name (optional). Can be set via env PROFILE.
+PROFILE ?=
+
+# Helper: jq-safe reads an expression either from a profile or root
+# If PROFILE is set and .profiles[PROFILE] exists, we read from it;
+# else if default_profile exists, we read from that; else from root.
+define jq_expr
+if (.profiles // empty) and ("$(PROFILE)" | length) and (.profiles["$(PROFILE)"]) then
+  .profiles["$(PROFILE)"] | ($(1))
+elif (.default_profile // empty) and (.profiles[.default_profile]) then
+  .profiles[.default_profile] | ($(1))
+else
+  ($(1))
+end
+endef
+
+# Resolve fields with jq if CONFIG_JSON exists, else use defaults
+ifeq ($(CONFIG_JSON),)
+  # No config file – use safe defaults
+  PROJ := sketch
+  FQBN := arduino:avr:uno
+  PORT := /dev/ttyUC
+  CORE_LIST :=
+  LIB_LIST  :=
+else
+  PROJ := $(shell jq -r '$(call jq_expr,.project // "sketch")' $(CONFIG_JSON))
+  FQBN := $(shell jq -r '$(call jq_expr,.fqbn    // "arduino:avr:uno")' $(CONFIG_JSON))
+  PORT := $(shell jq -r '$(call jq_expr,.port    // "/dev/ttyUC")' $(CONFIG_JSON))
+  CORE_LIST := $(shell jq -r '$(call jq_expr,.cores[]? | "\(.name)@\(.version // "")")' $(CONFIG_JSON))
+  LIB_LIST  := $(shell jq -r '$(call jq_expr,.libraries[]? | "\(.name)@\(.version // "")")' $(CONFIG_JSON))
+endif
+
+SRC_DIR ?= /workspace
+
+define install_with_optional_version
+  name=$${1%@*}; ver=$${1#*@}; \
+  if [ "$$ver" = "$$1" ] || [ -z "$$ver" ]; then \
+    arduino-cli $(2) install "$$name" || exit 1; \
+  else \
+    arduino-cli $(2) install "$$name@$$ver" || exit 1; \
+  fi
+endef
+
+.PHONY: help setup cores libs verify build upload all envshow
+
+help:
+	@echo "Targets: setup | build | upload | verify | all | envshow"
+	@echo "Optional: PROFILE=<name>  (selects a profile from compilerconfig.json)"
+
+envshow:
+	@echo "CONFIG_JSON = $(CONFIG_JSON)"
+	@echo "PROFILE     = $(PROFILE)"
+	@echo "PROJ        = $(PROJ)"
+	@echo "FQBN        = $(FQBN)"
+	@echo "PORT        = $(PORT)"
+
+setup: cores libs
+
+cores:
+ifneq ($(strip $(CORE_LIST)),)
+	@echo "Installing cores..."
+	@for c in $(CORE_LIST); do \
+	  $(call install_with_optional_version,$$c,core); \
+	done
+else
+	@echo "No cores listed; running core index update..."
+	@arduino-cli core update-index || true
+endif
+
+libs:
+ifneq ($(strip $(LIB_LIST)),)
+	@echo "Installing libraries..."
+	@for l in $(LIB_LIST); do \
+	  $(call install_with_optional_version,$$l,lib); \
+	done
+else
+	@echo "No libraries listed."
+endif
+
+verify:
+	arduino-cli compile --fqbn $(FQBN) $(SRC_DIR)/$(PROJ)
+
+build:
+	@echo "Building $(PROJ) for $(FQBN)"
+	arduino-cli compile --fqbn $(FQBN) --export-binaries $(SRC_DIR)/$(PROJ)
+
+upload:
+	@test -e "$(PORT)" || (echo "Serial device $(PORT) not found"; exit 2)
+	@echo "Uploading to $(PORT)"
+	arduino-cli upload -p $(PORT) --fqbn $(FQBN) $(SRC_DIR)/$(PROJ)
+
+all: setup build

@@ -1,0 +1,28 @@
+services:
+  arduino:
+    # build:
+    #  context: .
+    image: arduino-cli
+    container_name: arduino-cli
+    volumes:
+      - ./src:/workspace:rw
+      - ./arduino-cache:/root/.arduino15:rw  # arduino-cli extras cache
+      # If the repo doesn't include a config, mount your local config dir:
+      - ./config:/config:ro
+    environment:
+      # Select a profile in the multi-profile JSON
+      - PROFILE=${PROFILE:-}
+      # When set to "1", also flash after build
+      - UPLOAD=${UPLOAD:-0}
+    devices:
+      # Stable udev symlink on the host
+      - "/dev/ttyUC:/dev/ttyUC"
+    command: tail -F anything
+      # command: >
+      #   sh -lc '
+      #     if [ "$UPLOAD" = "1" ]; then
+      #       make -f /opt/arduino/Makefile all upload;
+      #     else
+      #       make -f /opt/arduino/Makefile all;
+      #     fi
+      #   '
